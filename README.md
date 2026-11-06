@@ -4,7 +4,7 @@
 
 A native workspace for structured logs. Follow the signal. Find the story.
 
-A native, local-first port of [Dyrean/evlog-explorer](https://github.com/Dyrean/evlog-explorer), built from Anomaly Rune's [`examples/hello`](https://github.com/anomalyco/rune/tree/dev/examples/hello) state/view/AppSpec pattern. The UI uses Rune elements and its GPU renderer throughout.
+A native, local-first port of [Dyrean/evlog-explorer](https://github.com/Dyrean/evlog-explorer), built with Rust and [Rune](https://github.com/anomalyco/rune). The UI uses Rune elements and its GPU renderer throughout.
 
 Rune is pinned to commit `781e2b6d87cd5f32d6f4365956fad4baaf24ee50`; `Cargo.lock` pins the dependency graph.
 
@@ -230,9 +230,14 @@ $env:XDG_DATA_HOME = $env:LOCALAPPDATA
 cargo run --locked
 ```
 
-That stores data under `%LOCALAPPDATA%\evlog-lens` for that PowerShell session. Without either environment variable, the current implementation falls back to `.local/share/evlog-lens` relative to the working directory.  **Restore saved session** appears on the start screen; **Delete saved session** deletes the saved copy. **Clear logs** clears memory and cancels pending imports. Saved filter views exclude source selection and correlation. Existing installations continue using the previous `evlog-explorer-rust` data folder when it exists and the new folder does not, so the rename keeps saved sessions and views accessible.
+That stores data under `%LOCALAPPDATA%\evlog-lens` for that PowerShell session. Without either environment variable, the current implementation falls back to `.local/share/evlog-lens` relative to the working directory. **Restore saved session** appears on the start screen; **Delete saved session** deletes the saved copy. **Clear logs** clears memory and cancels pending imports. Saved filter views exclude source selection and correlation. Existing installations continue using the previous `evlog-explorer-rust` data folder when it exists and the new folder does not, so the rename keeps saved sessions and views accessible.
 
 ## Verify headlessly
+
+The files in `scripts/` are optional development checks; building and running the application does not require them or Python.
+
+- `scripts/check_headless.py` builds the app, renders its screens, and checks the resulting element trees and window layout.
+- `scripts/investigate.json` supplies the search and timeline interactions used by that check through Rune's headless input runner.
 
 The Rust checks are the same in PowerShell and Unix shells:
 
@@ -277,6 +282,13 @@ Source sample data and application behavior come from [Dyrean/evlog-explorer](ht
 
 The lavender lens and mint event lines are native Rune vector geometry in the app. The matching reusable logo is [`assets/evlog-lens.svg`](assets/evlog-lens.svg), with a PNG export alongside it. The interface uses Inter for controls and IBM Plex Mono for log values, with a midnight-blue palette and separate error/warning colors.
 
+To regenerate logo assets from the shared native geometry:
+
+```text
+cargo run --locked -- --export-logo assets/evlog-lens.svg
+cargo run --locked -- --snap assets/evlog-lens.png --crop welcome-logo --scale 4
+```
+
 ## Code layout
 
 - `log/` owns immutable events, normalization, accepted file formats, and search syntax.
@@ -286,12 +298,3 @@ The lavender lens and mint event lines are native Rune vector geometry in the ap
 - `storage.rs` owns saved data and legacy discovery. `State::default()` performs no filesystem reads; production startup injects the store.
 - `app.rs` adapts Rune edit buffers and user actions to those boundaries. `shell.rs` supplies startup options, scenes, and the shared production runtime specification; `main.rs` launches it.
 - `ui/` contains feature views and shared presentation. It consumes domain timelines and results rather than rebuilding them.
-
-The refactor decisions, retained compatibility cases, and review results are recorded in [`docs/untangle-decisions.md`](docs/untangle-decisions.md).
-
-To regenerate logo assets from the shared native geometry:
-
-```text
-cargo run --locked -- --export-logo assets/evlog-lens.svg
-cargo run --locked -- --snap assets/evlog-lens.png --crop welcome-logo --scale 4
-```
