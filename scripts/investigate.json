@@ -1,0 +1,23 @@
+[
+  {
+    "t": 1.0,
+    "type": "tap",
+    "key": "search"
+  },
+  {
+    "t": 1.2,
+    "type": "type",
+    "text": "status:503 duration>1000",
+    "every": 0.02
+  },
+  {
+    "t": 3.0,
+    "type": "tap",
+    "key": "tab-timeline"
+  },
+  {
+    "t": 3.8,
+    "type": "tap",
+    "key": "tab-session"
+  }
+]
