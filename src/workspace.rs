@@ -26,6 +26,13 @@ impl LogBatch {
                 return Err("Saved event source metadata does not match its file".into());
             }
         }
+        for error in &self.errors {
+            if let Some(source) = error.source
+                && self.files.get(source).map(String::as_str) != Some(error.file.as_str())
+            {
+                return Err("Saved issue source metadata does not match its file".into());
+            }
+        }
         Ok(())
     }
     pub fn sample() -> Self {
@@ -46,6 +53,13 @@ pub struct Stats {
     pub slow: usize,
     pub p95: Option<f64>,
 }
+#[derive(Clone, Default)]
+pub struct FileSummary {
+    pub events: usize,
+    pub issues: usize,
+    pub first: Option<i64>,
+    pub last: Option<i64>,
+}
 pub struct QueryResult {
     pub ids: Vec<usize>,
     pub stats: Stats,
@@ -60,6 +74,7 @@ pub struct Workspace {
     data: LogBatch,
     query: RefCell<Option<CachedQuery>>,
     totals: RefCell<Option<Stats>>,
+    files: RefCell<Option<Rc<Vec<FileSummary>>>>,
 }
 pub struct TimelineGroup {
     pub label: Option<String>,
@@ -81,8 +96,13 @@ impl Workspace {
     pub fn append(&mut self, mut batch: LogBatch) -> Result<(), String> {
         batch.validate()?;
         for event in &mut batch.events {
-            event.rebase_source(self.data.files.len());
+            event.set_source(event.source() + self.data.files.len());
             event.projection();
+        }
+        for error in &mut batch.errors {
+            if let Some(source) = &mut error.source {
+                *source += self.data.files.len();
+            }
         }
         self.data.events.append(&mut batch.events);
         self.data.errors.append(&mut batch.errors);
@@ -103,6 +123,61 @@ impl Workspace {
         self.data = LogBatch::default();
         self.invalidate();
     }
+    pub fn remove_file(&mut self, source: usize) -> bool {
+        if source >= self.data.files.len() {
+            return false;
+        }
+        let name = self.data.files.remove(source);
+        self.data.events.retain(|event| event.source() != source);
+        for event in &mut self.data.events {
+            if event.source() > source {
+                event.set_source(event.source() - 1);
+            }
+        }
+        self.data.errors.retain(|error| match error.source {
+            Some(index) => index != source,
+            // Legacy issues have only a name; retain them while that name is still loaded.
+            None => error.file != name || self.data.files.contains(&name),
+        });
+        for error in &mut self.data.errors {
+            if let Some(index) = &mut error.source
+                && *index > source
+            {
+                *index -= 1;
+            }
+        }
+        self.invalidate();
+        true
+    }
+    pub fn file_summaries(&self) -> Rc<Vec<FileSummary>> {
+        if let Some(files) = self.files.borrow().as_ref() {
+            return files.clone();
+        }
+        let mut files = vec![FileSummary::default(); self.files().len()];
+        for event in self.events() {
+            let file = &mut files[event.source()];
+            file.events += 1;
+            if let Some(time) = event.timestamp() {
+                file.first = Some(file.first.map_or(time, |first| first.min(time)));
+                file.last = Some(file.last.map_or(time, |last| last.max(time)));
+            }
+        }
+        for error in self.errors() {
+            if let Some(source) = error.source {
+                files[source].issues += 1;
+            } else {
+                // shortcut: legacy issues lack source IDs; attribute by name until reimported.
+                for (source, name) in self.files().iter().enumerate() {
+                    if *name == error.file {
+                        files[source].issues += 1;
+                    }
+                }
+            }
+        }
+        let files = Rc::new(files);
+        *self.files.borrow_mut() = Some(files.clone());
+        files
+    }
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -110,6 +185,7 @@ impl Workspace {
         self.generation = self.generation.wrapping_add(1);
         self.query.get_mut().take();
         self.totals.get_mut().take();
+        self.files.get_mut().take();
     }
     pub fn results(&self, query: &Query) -> Result<Rc<QueryResult>, String> {
         if let Some(cached) = self.query.borrow().as_ref().filter(|c| c.query == *query) {
@@ -311,6 +387,78 @@ mod tests {
                 .unwrap();
             assert_eq!(&result.ids[3..], &[3, 4]);
         }
+    }
+    #[test]
+    fn file_summaries_and_removal_keep_same_named_sources_distinct() {
+        let mut workspace = Workspace::default();
+        workspace
+            .append(batch("{\"timestamp\":3}\n{\"timestamp\":1}\nbad"))
+            .unwrap();
+        workspace
+            .append(batch("{\"level\":\"error\"}\nbad"))
+            .unwrap();
+        workspace.append(batch("{\"timestamp\":2}\nbad")).unwrap();
+        let summaries = workspace.file_summaries();
+        assert_eq!(summaries[0].events, 2);
+        assert_eq!(summaries[0].issues, 1);
+        assert_eq!(
+            (summaries[0].first, summaries[0].last),
+            (Some(1000), Some(3000))
+        );
+        assert_eq!((summaries[1].first, summaries[1].last), (None, None));
+        assert_eq!(workspace.totals().errors, 1);
+        workspace.results(&Query::default()).unwrap();
+        assert!(workspace.remove_file(1));
+        workspace.snapshot().validate().unwrap();
+        assert_eq!(
+            workspace
+                .events()
+                .iter()
+                .map(Event::source)
+                .collect::<Vec<_>>(),
+            [0, 0, 1]
+        );
+        assert_eq!(
+            workspace
+                .errors()
+                .iter()
+                .map(|e| e.source)
+                .collect::<Vec<_>>(),
+            [Some(0), Some(1)]
+        );
+        assert_eq!(workspace.file_summaries().len(), 2);
+        assert_eq!(workspace.totals().errors, 0);
+        assert_eq!(workspace.results(&Query::default()).unwrap().ids.len(), 3);
+        let generation = workspace.generation();
+        assert!(!workspace.remove_file(9));
+        assert_eq!(workspace.generation(), generation);
+        assert!(workspace.remove_file(0));
+        assert!(workspace.remove_file(0));
+        assert!(workspace.events().is_empty());
+        assert!(workspace.errors().is_empty());
+        assert!(workspace.file_summaries().is_empty());
+    }
+    #[test]
+    fn legacy_issues_survive_until_the_last_same_named_file_is_removed() {
+        let mut legacy: LogBatch = serde_json::from_str(
+            r#"{"files":["test.ndjson","test.ndjson"],"events":[],"errors":[{"file":"test.ndjson","line":1,"message":"bad"}]}"#
+        ).unwrap();
+        assert_eq!(legacy.errors[0].source, None);
+        let mut workspace = Workspace::default();
+        workspace.replace(std::mem::take(&mut legacy)).unwrap();
+        assert!(workspace.remove_file(0));
+        assert_eq!(workspace.errors().len(), 1);
+        assert!(workspace.remove_file(0));
+        assert!(workspace.errors().is_empty());
+    }
+    #[test]
+    fn invalid_issue_source_never_replaces_valid_data() {
+        let mut workspace = Workspace::default();
+        workspace.replace(LogBatch::sample()).unwrap();
+        let mut invalid = batch("bad");
+        invalid.errors[0].source = Some(7);
+        assert!(workspace.replace(invalid).is_err());
+        assert_eq!(workspace.events().len(), 50);
     }
     #[test]
     fn invalid_source_metadata_never_replaces_valid_data() {

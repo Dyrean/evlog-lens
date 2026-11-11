@@ -67,10 +67,21 @@ pub(crate) fn view(s: &State, _: &mut Cx<State>) -> El {
     if s.workspace().events().is_empty() {
         content = content.child(explorer::welcome(s));
     } else {
-        content = content
-            .child(explorer::overview(s, ids))
-            .child(explorer::toolbar(s, filtered.as_ref().err()));
-        let mut body = row().grow(1.0).min_h(0.0).child(explorer::table(s, ids));
+        content = content.child(
+            col()
+                .key("filter-scroll")
+                .min_h(0.0)
+                .shrink()
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(
+                    col()
+                        .child(explorer::overview(s, ids))
+                        .child(explorer::toolbar(s, filtered.as_ref().err())),
+                ),
+        );
+        let mut body = row().grow(1.0).min_h(180.0).child(explorer::table(s, ids));
         if let Some(i) = s.selected.filter(|i| *i < s.workspace().events().len()) {
             body = body.child(inspector::inspector(s, i));
         }

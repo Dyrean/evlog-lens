@@ -17,27 +17,14 @@ pub(super) fn button(key: impl Into<String>, title: impl Into<String>, active: b
         .fill(if active { active_surface() } else { panel() })
         .border(1.0, if active { active_border() } else { line() })
         .hover(Color::WHITE.alpha(0.045))
-        .child(label(title, 13.0, if active { accent() } else { ink() }))
+        .child(
+            label(title, 13.0, if active { accent() } else { ink() })
+                .min_w(0.0)
+                .truncate(),
+        )
 }
 pub(super) fn import_button() -> El {
-    button("import", "+ Import files", true).on_press_tx(|_: &mut State, tx: &mut Tx| {
-        tx.open_file(
-            FileDialogOptions {
-                title: "Import structured logs".into(),
-                ..Default::default()
-            }
-            .filter("Log files", &["json", "jsonl", "ndjson"]),
-            |s: &mut State, result, _| match result {
-                Ok(Some(path)) => s.import(vec![path]),
-                Ok(None) => {}
-                Err(e) => {
-                    s.notice = format!(
-                        "Could not open file chooser: {e}. You can drop files into the window."
-                    )
-                }
-            },
-        );
-    })
+    button("import", "+ Import files", true).on_press(State::choose_import_files)
 }
 pub(super) fn export_button() -> El {
     button("export", "Export NDJSON", false).on_press_tx(|_: &mut State, tx: &mut Tx| {

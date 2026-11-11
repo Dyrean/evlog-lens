@@ -67,8 +67,8 @@ impl Event {
     pub fn line(&self) -> Option<usize> {
         self.line
     }
-    pub(crate) fn rebase_source(&mut self, offset: usize) {
-        self.source += offset;
+    pub(crate) fn set_source(&mut self, source: usize) {
+        self.source = source;
     }
     pub fn level(&self) -> &str {
         &self.projection().level

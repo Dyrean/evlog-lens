@@ -1,4 +1,5 @@
 use crate::{
+    file_picker,
     importer::{self, ImportJob, ImportUpdate},
     query::{Correlation, CorrelationField, Filters, InspectorTab, Query, SavedView},
     storage::Store,
@@ -11,6 +12,7 @@ use std::{
     io::Write,
     path::PathBuf,
     rc::Rc,
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -36,6 +38,9 @@ pub struct State {
     views_load_error: Option<String>,
     saved_session: bool,
     pending: Option<ImportJob>,
+    import_dialog: Option<file_picker::Dialog>,
+    discard_import_selection: bool,
+    pub(crate) import_picker: Box<dyn FnMut() -> file_picker::Dialog>,
     progress: String,
     page: Cell<usize>,
     page_query: RefCell<Option<(u64, Query)>>,
@@ -64,6 +69,9 @@ impl Default for State {
             views_load_error: None,
             saved_session: false,
             pending: None,
+            import_dialog: None,
+            discard_import_selection: false,
+            import_picker: Box::new(file_picker::open),
             progress: String::new(),
             page: Cell::new(0),
             page_query: RefCell::new(None),
@@ -141,7 +149,28 @@ impl State {
         self.correlation = None;
         self.page.set(0);
     }
+    pub fn choose_import_files(&mut self) {
+        if self.importing() {
+            self.notice =
+                "An import is already running. Finish or cancel it before importing more files."
+                    .into();
+            return;
+        }
+        if self.import_dialog.is_none() {
+            self.discard_import_selection = false;
+            self.import_dialog = Some((self.import_picker)());
+        }
+    }
+    pub fn choosing_import_files(&self) -> bool {
+        self.import_dialog.is_some()
+    }
     pub fn import(&mut self, paths: Vec<PathBuf>) {
+        if self.choosing_import_files() {
+            self.notice =
+                "A file chooser is already open. Finish or cancel it before importing more files."
+                    .into();
+            return;
+        }
         if self.importing() {
             self.notice =
                 "An import is already running. Finish or cancel it before importing more files."
@@ -156,12 +185,34 @@ impl State {
             self.commit_import(batch);
         }
     }
+    pub fn remove_file(&mut self, source: usize) {
+        if !self.workspace.remove_file(source) {
+            return;
+        }
+        self.filters.file = self.filters.file.and_then(|selected| {
+            if selected == source {
+                None
+            } else {
+                Some(selected - usize::from(selected > source))
+            }
+        });
+        self.selected = None;
+        self.collapsed.clear();
+        self.notice =
+            "File removed from workspace; the original file and saved session are unchanged".into();
+    }
     fn commit_import(&mut self, batch: LogBatch) {
-        let message = format!(
+        let mut names: HashSet<_> = self.workspace.files().iter().map(String::as_str).collect();
+        let repeated = batch.files.iter().any(|name| !names.insert(name.as_str()));
+        let mut message = format!(
             "Imported {} events · {} issues",
             batch.events.len(),
             batch.errors.len()
         );
+        if repeated {
+            // shortcut: file names are persisted, not paths; warn without rejecting distinct files.
+            message.push_str(" · Warning: repeated file names; imported anyway. Remove duplicates in Source files.");
+        }
         self.notice = match self.workspace.append(batch) {
             Ok(()) => message,
             Err(error) => format!("Could not commit imported logs: {error}"),
@@ -175,9 +226,29 @@ impl State {
     }
     pub fn cancel_import(&mut self) {
         self.pending = None;
+        // Drain the native dialog instead of dropping it and leaving its worker orphaned.
+        self.discard_import_selection = true;
     }
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
+        if let Some(dialog) = &mut self.import_dialog
+            && let Poll::Ready(result) = dialog
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            self.import_dialog = None;
+            changed = true;
+            match result {
+                _ if self.discard_import_selection => {}
+                Ok(Some(paths)) if !paths.is_empty() => self.import(paths),
+                Ok(_) => {}
+                Err(error) => {
+                    self.notice = format!(
+                        "Could not open file chooser: {error}. You can drop files into the window."
+                    )
+                }
+            }
+        }
         while let Some(update) = self.pending.as_mut().and_then(ImportJob::next) {
             changed = true;
             match update {
@@ -336,7 +407,7 @@ impl State {
 }
 pub fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
     let changed = state.poll();
-    if state.importing() {
+    if state.importing() || state.choosing_import_files() {
         tx.wake_after(Duration::from_millis(16));
     }
     changed
@@ -346,6 +417,51 @@ pub fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
+    #[test]
+    fn clearing_or_replacing_logs_ignores_an_already_open_picker() {
+        let dir = TempDir::new();
+        let path = dir.write("late.ndjson", "{\"message\":\"late\"}\n");
+        for action in [State::clear, State::sample, State::restore] {
+            let mut state = State::new(Store::new(dir.path().join("saved")));
+            state.sample();
+            state.save_session();
+            let selected = path.clone();
+            state.import_picker =
+                Box::new(move || Box::pin(std::future::ready(Ok(Some(vec![selected.clone()])))));
+            state.choose_import_files();
+            action(&mut state);
+            let count = state.workspace.events().len();
+            state.poll();
+            assert!(
+                !state.importing(),
+                "A stale picker must not start an import"
+            );
+            assert_eq!(state.workspace.events().len(), count);
+            state.choose_import_files();
+            state.poll();
+            assert!(
+                state.importing(),
+                "A new picker must still work after cancellation"
+            );
+            state.cancel_import();
+        }
+    }
+    #[test]
+    fn import_and_picker_cannot_run_at_the_same_time() {
+        let mut state = State {
+            import_picker: Box::new(|| Box::pin(std::future::pending())),
+            ..Default::default()
+        };
+        state.import(vec![]);
+        state.choose_import_files();
+        assert!(!state.choosing_import_files());
+        assert!(state.notice.contains("already running"));
+        state.cancel_import();
+        state.choose_import_files();
+        state.import(vec![]);
+        assert!(!state.importing());
+        assert!(state.notice.contains("chooser is already open"));
+    }
     #[test]
     fn saving_views_does_not_overwrite_a_corrupt_store() {
         let dir = TempDir::new();
@@ -396,6 +512,54 @@ mod tests {
         state.delete_session();
         assert!(!state.has_saved_session());
         assert_eq!(state.workspace.events().len(), 50);
+    }
+    #[test]
+    fn removing_a_file_rebases_filters_but_does_not_touch_disk_or_saved_sessions() {
+        let dir = TempDir::new();
+        let paths: Vec<_> = (0..3)
+            .map(|i| dir.write(&format!("{i}.ndjson"), "{\"message\":\"event\"}\nbad\n"))
+            .collect();
+        let mut state = State::new(Store::new(dir.path().join("saved")));
+        state.load_files(&paths);
+        state.save_session();
+        state.filters.file = Some(2);
+        state.selected = Some(2);
+        state.results().unwrap();
+        state.set_page(4);
+        state.remove_file(1);
+        assert_eq!(state.filters.file, Some(1));
+        assert_eq!(state.selected, None);
+        assert_eq!(state.table_page(), 0);
+        assert_eq!(state.workspace.errors().len(), 2);
+        assert_eq!(state.results().unwrap().ids.len(), 1);
+        assert!(paths.iter().all(|path| path.is_file()));
+        assert_eq!(
+            Store::new(dir.path().join("saved"))
+                .load_session()
+                .unwrap()
+                .files
+                .len(),
+            3
+        );
+        state.remove_file(1);
+        assert_eq!(state.filters.file, None);
+        state.workspace.snapshot().validate().unwrap();
+    }
+    #[test]
+    fn repeated_file_names_warn_without_discarding_events() {
+        let dir = TempDir::new();
+        let first = dir.write("one/events.ndjson", "{\"message\":\"one\"}\n");
+        let second = dir.write("two/events.ndjson", "{\"message\":\"two\"}\n");
+        let mut state = State::default();
+        state.load_files(&[first, second]);
+        assert!(state.notice.contains("repeated file names"));
+        assert_eq!(state.workspace.events().len(), 2);
+        state.load_files(&[dir.write("other.ndjson", "{}\n")]);
+        assert!(!state.notice.contains("repeated"));
+        let repeated = dir.write("events.ndjson", "{}\n");
+        state.load_files(&[repeated]);
+        assert!(state.notice.contains("repeated file names"));
+        assert_eq!(state.workspace.events().len(), 4);
     }
     #[test]
     fn importing_a_new_batch_returns_navigation_to_the_first_page() {

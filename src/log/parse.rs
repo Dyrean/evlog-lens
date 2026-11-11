@@ -4,6 +4,8 @@ use serde_json::Value;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportError {
     pub file: String,
+    #[serde(default)]
+    pub source: Option<usize>,
     pub line: Option<usize>,
     pub message: String,
 }
@@ -60,6 +62,7 @@ pub fn parse_cancellable(
         } else {
             batch.errors.push(ImportError {
                 file: file.into(),
+                source: Some(source),
                 line,
                 message: "Event must be a JSON object".into(),
             });
@@ -98,6 +101,7 @@ pub fn parse_cancellable(
             Err(_) if input.trim_start().starts_with('[') => {
                 batch.errors.push(ImportError {
                     file: file.into(),
+                    source: Some(source),
                     line: None,
                     message: "Invalid JSON array".into(),
                 });
@@ -117,11 +121,13 @@ pub fn parse_cancellable(
             Ok(v) if v.is_object() => batch.events.push(Event::new(v, file, source, Some(i + 1))),
             Ok(_) => batch.errors.push(ImportError {
                 file: file.into(),
+                source: Some(source),
                 line: Some(i + 1),
                 message: "Event must be a JSON object".into(),
             }),
             Err(e) => batch.errors.push(ImportError {
                 file: file.into(),
+                source: Some(source),
                 line: Some(i + 1),
                 message: e.to_string(),
             }),

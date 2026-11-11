@@ -119,8 +119,10 @@ impl Query {
         {
             return Err("Unrecognized severity filter".into());
         }
-        if ![0, 2, 3, 4, 5].contains(&self.filters.status) {
-            return Err("Unrecognized HTTP status group".into());
+        if ![0, 2, 3, 4, 5].contains(&self.filters.status)
+            && !(100..=599).contains(&self.filters.status)
+        {
+            return Err("Unrecognized HTTP status filter".into());
         }
         if ![0, 15, 60, 1440].contains(&self.filters.minutes) {
             return Err("Unrecognized relative time range".into());
@@ -179,7 +181,14 @@ impl CompiledQuery<'_> {
                 })
             && f.file.is_none_or(|id| event.source() == id)
             && (f.method.is_empty() || p.method.eq_ignore_ascii_case(&f.method))
-            && (f.status == 0 || event.status().is_some_and(|n| n / 100 == f.status))
+            && (f.status == 0
+                || event.status().is_some_and(|n| {
+                    if f.status < 100 {
+                        n / 100 == f.status
+                    } else {
+                        n == f.status
+                    }
+                }))
             && (!f.slow
                 || (!p.method.is_empty() && p.duration.is_some_and(|n| n >= SLOW_THRESHOLD_MS)))
             && self.has_relative_anchor
@@ -222,6 +231,38 @@ mod tests {
         let view: SavedView = serde_json::from_str(legacy).unwrap();
         assert_eq!(view.filters.query, "status:503");
         assert_eq!(view.filters.filters.level, "errors");
+    }
+    #[test]
+    fn exact_status_and_status_groups_are_distinct_and_can_be_saved() {
+        let events = log::parse(
+            "test.json",
+            0,
+            r#"[{"status":503},{"status":500},{"status":200},{}]"#,
+        )
+        .events;
+        for (status, count) in [(0, 4), (5, 2), (503, 1), (200, 1)] {
+            let query = Query {
+                filters: Filters {
+                    status,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let query: Query =
+                serde_json::from_str(&serde_json::to_string(&query).unwrap()).unwrap();
+            let compiled = query.compile(None).unwrap();
+            assert_eq!(events.iter().filter(|e| compiled.matches(e)).count(), count);
+        }
+        for status in [1, 6, 99, 600, u16::MAX] {
+            let query = Query {
+                filters: Filters {
+                    status,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert!(query.compile(None).is_err());
+        }
     }
     #[test]
     fn persisted_time_ranges_cannot_overflow_filter_arithmetic() {

@@ -15,3 +15,12 @@ debug = 0
 
 [profile.dev.package."*"]
 opt-level = 1
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+rfd = { version = "0.17.2", default-features = false }

@@ -6,7 +6,7 @@ use crate::{
     query::{InspectorTab, SLOW_THRESHOLD_MS},
 };
 use rune::tok::TextStyle;
-use rune::{Color, El, ScrollSpec, col, row, text};
+use rune::{Color, El, ScrollSpec, TextEdit, col, row, text};
 
 pub(super) fn welcome(s: &State) -> El {
     let mut content = col()
@@ -273,12 +273,23 @@ pub(super) fn toolbar(s: &State, error: Option<&String>) -> El {
         )
         .child(
             row()
-                .justify_between()
-                .child(label(
-                    "Exact fields: status:503  ·  duration>1000  ·  session:sess-local-001",
-                    11.0,
-                    muted(),
-                ))
+                .gap(6.0)
+                .flex_wrap()
+                .center_y()
+                .child(label("Try:", 11.0, muted()))
+                .children(
+                    [
+                        ("search-errors", "status:503"),
+                        ("search-slow", "duration>1000"),
+                        ("search-phrase", "\"connection refused\""),
+                    ]
+                    .into_iter()
+                    .map(|(key, query)| {
+                        button(key, query, false)
+                            .help("Replace search with this example; other filters stay active")
+                            .on_press(move |s: &mut State| s.search = TextEdit::new(query))
+                    }),
+                )
                 .child(
                     button("utc", if s.utc { "UTC" } else { "Local time" }, false)
                         .on_press(|s: &mut State| s.utc = !s.utc),
@@ -288,25 +299,81 @@ pub(super) fn toolbar(s: &State, error: Option<&String>) -> El {
         out = out.child(advanced(s));
     }
     if s.query_active() {
-        let description = if let Some(correlation) = &s.correlation {
-            format!("Following {}: {}", correlation.field, correlation.value)
-        } else {
-            format!(
-                "{} {} {}",
-                s.filters.level,
-                if s.filters.slow {
-                    format!("duration ≥ {}ms", SLOW_THRESHOLD_MS)
-                } else {
-                    String::new()
-                },
-                s.filters.method
-            )
+        let mut chips = Vec::new();
+        let mut add = |key: &str, title: String, remove: fn(&mut State)| {
+            chips.push(
+                button(key, format!("{title} ×"), true)
+                    .max_w(260.0)
+                    .label(format!("Remove filter: {title}"))
+                    .help(&title)
+                    .on_press(remove),
+            );
         };
+        if !s.search.text.is_empty() {
+            add("chip-search", format!("Search: {}", s.search.text), |s| {
+                s.search = TextEdit::new("")
+            });
+        }
+        if let Some(file) = s.filters.file.and_then(|i| s.workspace().files().get(i)) {
+            add("chip-file", format!("File: {file}"), |s| {
+                s.filters.file = None
+            });
+        }
+        if !s.filters.level.is_empty() {
+            add("chip-level", format!("Level: {}", s.filters.level), |s| {
+                s.filters.level.clear()
+            });
+        }
+        if !s.filters.method.is_empty() {
+            add(
+                "chip-method",
+                format!("Method: {}", s.filters.method),
+                |s| s.filters.method.clear(),
+            );
+        }
+        if s.filters.status != 0 {
+            add(
+                "chip-status",
+                format!(
+                    "Status: {}{}",
+                    s.filters.status,
+                    if s.filters.status < 100 { "xx" } else { "" }
+                ),
+                |s| s.filters.status = 0,
+            );
+        }
+        if s.filters.slow {
+            add("chip-slow", "Slow requests".into(), |s| {
+                s.filters.slow = false
+            });
+        }
+        if s.filters.minutes != 0 {
+            add("chip-time", time.into(), |s| s.filters.minutes = 0);
+        }
+        if !s.start.text.is_empty() {
+            add("chip-start", format!("From: {}", s.start.text), |s| {
+                s.start = TextEdit::new("")
+            });
+        }
+        if !s.end.text.is_empty() {
+            add("chip-end", format!("To: {}", s.end.text), |s| {
+                s.end = TextEdit::new("")
+            });
+        }
+        if let Some(correlation) = &s.correlation {
+            add(
+                "chip-correlation",
+                format!("{}: {}", correlation.field, correlation.value),
+                |s| s.correlation = None,
+            );
+        }
         out = out.child(
             row()
-                .gap(10.0)
+                .key("active-filters")
+                .gap(6.0)
+                .flex_wrap()
                 .center_y()
-                .child(label(description, 11.0, accent()).grow(1.0))
+                .children(chips)
                 .child(button("clear-filters", "Clear filters", false).on_press(State::reset)),
         );
     }
@@ -329,6 +396,26 @@ fn table_row(s: &State, i: usize) -> El {
     let level = e.level();
     let status = e.status();
     let path = e.field("path");
+    let filter_level = level.to_owned();
+    let mut status_cell = mono(
+        status.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+        11.0,
+        if status.is_some_and(|n| n >= 500) {
+            error_color()
+        } else {
+            muted()
+        },
+    )
+    .w(STATUS_WIDTH);
+    if let Some(status) = status {
+        status_cell = status_cell
+            .key(format!("filter-status-{i}"))
+            .role("button")
+            .label(format!("Filter status {status}"))
+            .focusable(true)
+            .hover(active_surface())
+            .on_press(move |s: &mut State| s.filters.status = status);
+    }
     row()
         .key(format!("event-{i}"))
         .role("row")
@@ -351,11 +438,15 @@ fn table_row(s: &State, i: usize) -> El {
         })
         .hover(Color::WHITE.alpha(0.03))
         .child(mono(e.time(s.utc), 11.0, muted()).w(TIME_WIDTH))
-        .child(badge(
-            &level.to_uppercase(),
-            level_color(level),
-            LEVEL_WIDTH,
-        ))
+        .child(
+            badge(&level.to_uppercase(), level_color(level), LEVEL_WIDTH)
+                .key(format!("filter-level-{i}"))
+                .role("button")
+                .label(format!("Filter level {level}"))
+                .focusable(true)
+                .hover(active_surface())
+                .on_press(move |s: &mut State| s.filters.level = filter_level.clone()),
+        )
         .child(mono(e.field("method"), 11.0, accent()).w(METHOD_WIDTH))
         .child(
             col()
@@ -377,18 +468,7 @@ fn table_row(s: &State, i: usize) -> El {
                 )
                 .child(label(e.field("message"), 11.0, muted()).w_full().truncate()),
         )
-        .child(
-            mono(
-                status.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
-                11.0,
-                if status.is_some_and(|n| n >= 500) {
-                    error_color()
-                } else {
-                    muted()
-                },
-            )
-            .w(STATUS_WIDTH),
-        )
+        .child(status_cell)
         .child(
             mono(
                 log::duration_label(e.duration()),

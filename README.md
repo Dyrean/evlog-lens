@@ -157,7 +157,7 @@ When running the built executable directly, omit Cargo's separator:
 ./target/debug/evlog-lens --load "/path/to/events.ndjson"
 ```
 
-Use **Import files**, or drop multiple files anywhere in the window. `--load` can repeat. Quote file paths containing spaces. The included sample has 50 events, 12 requests, and four sessions.
+Use **Import files** and select multiple logs with Ctrl-click (Cmd-click on macOS) or Shift-click, or drop multiple files anywhere in the window. Selected files are imported together in one batch. `--load` can repeat. Quote file paths containing spaces. The included sample has 50 events, 12 requests, and four sessions.
 
 ### Headless rendering
 
@@ -216,8 +216,10 @@ Then rerun the snapshot command. If Vulkan chooses the wrong driver, inspect `/u
 
 ## Explore
 
-- Import JSON objects, arrays, `{ "events": [...] }`, JSONL, or NDJSON. Valid entries survive malformed lines; issues retain file and line information. Background imports commit as one batch. Cancel signals the worker during chunked reading and JSON parsing, discards the pending batch, and keeps loaded data.
+- Import JSON objects, arrays, `{ "events": [...] }`, JSONL, or NDJSON. Valid entries survive malformed lines; issues retain file and line information. Background imports commit as one batch. Cancel signals the worker during chunked reading and JSON parsing, discards the pending batch, and keeps loaded data. Only one picker or import can run at a time. Clearing logs, loading the sample, or restoring a session ignores results from an already-open picker; close that native dialog before choosing files again.
 - Search all JSON fields with unquoted fuzzy text, `"literal phrases"`, exact predicates such as `status:503`, `request:req-011`, `session:sess-local-003`, `user.id:user-3`, or numeric comparisons such as `duration>=1000`. Predicates combine with AND. Duration comparisons use milliseconds. Fuzzy text uses subsequence matching.
+- **Source files** shows each file's event count, import issue count, and first/last dated event. Click a source to filter it; use its **×** button to remove it from memory without deleting the original file or changing a saved session. Repeated file names trigger a warning but are still imported, since different files can share a name.
+- Click a level badge or HTTP status in the event table to filter by that exact value. Active filters appear as individually removable chips. Search example buttons replace the search text while keeping other filters.
 - Use quick views for errors, warnings, slow requests, and 5xx responses. Click a source to filter it. **Filters & views** adds level, method, status, ISO 8601 time bounds, and named views. The time-range button cycles all time, 15 minutes, one hour, and 24 hours, ending at the newest imported event.
 - Select an event to inspect normalized fields, its preserved JSON, and evlog's `why` / `fix`. Expand nested JSON sections or copy the full event. Click request, trace, session, or user IDs to follow exact matches across loaded files.
 - **Timeline** shows request/trace events in chronological order, independent of table filters. **Session** groups the session's events by request ID; events without a request ID remain separate. Select any timeline event to inspect it. Escape closes the inspector.
@@ -263,6 +265,8 @@ python3 scripts/check_headless.py
 
 If Python 3 is available as `python` instead, use `python scripts/check_headless.py`. The script resolves the native executable through Cargo metadata, including Windows's `.exe` suffix.
 
+On Linux, the picker regression test uses `dbus-run-session` to test repeated multi-file selection, cancellation, and non-local URI rejection against a private fake portal, without opening desktop dialogs. This test is skipped if `dbus-run-session` is unavailable.
+
 Tests exercise normalization and fallback IDs, malformed imports, interruption of large JSON/NDJSON parsing, worker shutdown, same-length dataset replacement, source rebasing, paging, correlation, persistence and corruption recovery, atomic concurrent saves, export, sidebar scrolling with 30 sources, and the production Rune polling/key/dialog hooks. Import diagnostics remain fully accessible beyond the first 100 issues. Undated events appear after dated events in either table sort direction and in chronological timelines. The headless check renders eight PNGs with matching element trees, asserts the scripted search/session workflow, checks the minimum window layout, and rejects Rune warnings. Outputs are in `artifacts/`.
 
 ```text
@@ -274,7 +278,7 @@ Scenes: `sample`, `incident`, `errors`, `json`, `session`. Without a scene the a
 
 ## Scope
 
-Desktop layout, minimum 1180×720. Files and parsed events must fit in memory. Normalized timestamps, severity, duration, correlation IDs, and searchable JSON text are prepared once per event. Filter results and summaries are cached until the dataset or query changes; new queries still scan the imported events. This is not a disk-indexed log database. Native OS dialog presentation has not been exercised interactively; its callbacks are tested headlessly. The port uses native files for persistence, ISO timestamps with explicit timezones for custom bounds, and pagination in place of the web app's IndexedDB, local datetime inputs, and virtual table.
+Desktop layout, minimum 1180×720. Files and parsed events must fit in memory. Normalized timestamps, severity, duration, correlation IDs, and searchable JSON text are prepared once per event. Filter results and summaries are cached until the dataset or query changes; new queries still scan the imported events. This is not a disk-indexed log database. Native OS dialog presentation has not been exercised interactively; picker results and export callbacks are tested headlessly. Duplicate-import warnings compare file names rather than paths or contents. Older sessions without issue source IDs attribute issues by file name; ambiguous issues are retained until the last source with that name is removed. The port uses native files for persistence, ISO timestamps with explicit timezones for custom bounds, and pagination in place of the web app's IndexedDB, local datetime inputs, and virtual table.
 
 Source sample data and application behavior come from [Dyrean/evlog-explorer](https://github.com/Dyrean/evlog-explorer); see `LICENSE`. Rune is MIT licensed.
 

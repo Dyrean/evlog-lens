@@ -4,23 +4,111 @@ use crate::{app::State, log, query::SLOW_THRESHOLD_MS};
 use rune::{El, ScrollSpec, col, el, row};
 
 pub(super) fn sidebar(s: &State) -> El {
-    let mut files = col().gap(3.0);
+    let summaries = s.workspace().file_summaries();
+    let date = |value: Option<i64>| {
+        value
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .map(|time| {
+                if s.utc {
+                    time.format("%Y-%m-%d %H:%M:%S").to_string()
+                } else {
+                    time.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string()
+                }
+            })
+            .unwrap_or_else(|| "—".into())
+    };
+    let mut files = col().gap(8.0);
     for (i, name) in s.workspace().files().iter().enumerate() {
+        let summary = &summaries[i];
         files = files.child(
-            nav(
-                format!("file-{i}"),
-                name.clone(),
-                "",
-                s.filters.file == Some(i),
-                move |s: &mut State| {
-                    s.filters.file = if s.filters.file == Some(i) {
-                        None
-                    } else {
-                        Some(i)
-                    };
-                },
-            )
-            .help(name.clone()),
+            col()
+                .gap(3.0)
+                .child(
+                    row()
+                        .gap(3.0)
+                        .center_y()
+                        .child(
+                            nav(
+                                format!("file-{i}"),
+                                name.clone(),
+                                summary.events.to_string(),
+                                s.filters.file == Some(i),
+                                move |s: &mut State| {
+                                    s.filters.file = if s.filters.file == Some(i) {
+                                        None
+                                    } else {
+                                        Some(i)
+                                    };
+                                },
+                            )
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .gap(6.0)
+                            .help(name.clone()),
+                        )
+                        .child(
+                            button(format!("remove-file-{i}"), "×", false)
+                                .label(format!("Remove {name} from workspace"))
+                                .help("Remove from workspace only; original file is not deleted")
+                                .on_press(move |s: &mut State| s.remove_file(i)),
+                        ),
+                )
+                .child(
+                    label(
+                        format!(
+                            "{} {} · {} import {}",
+                            summary.events,
+                            if summary.events == 1 {
+                                "event"
+                            } else {
+                                "events"
+                            },
+                            summary.issues,
+                            if summary.issues == 1 {
+                                "issue"
+                            } else {
+                                "issues"
+                            }
+                        ),
+                        10.0,
+                        if summary.issues > 0 {
+                            warning_color()
+                        } else {
+                            muted()
+                        },
+                    )
+                    .key(format!("file-summary-{i}"))
+                    .px(10.0),
+                )
+                .child(
+                    col()
+                        .px(10.0)
+                        .gap(2.0)
+                        .child(label(
+                            if summary.first.is_some() {
+                                format!("From {}", date(summary.first))
+                            } else {
+                                "No dated events".into()
+                            },
+                            10.0,
+                            muted(),
+                        ))
+                        .child(label(
+                            if summary.last.is_some() {
+                                format!(
+                                    "To {}{}",
+                                    date(summary.last),
+                                    if s.utc { " UTC" } else { " local" }
+                                )
+                            } else {
+                                String::new()
+                            },
+                            10.0,
+                            muted(),
+                        )),
+                ),
         );
     }
     let mut views = col().gap(3.0);

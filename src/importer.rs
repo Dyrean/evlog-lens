@@ -124,22 +124,24 @@ pub fn read_files(
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
+        let source = batch.files.len();
+        batch.files.push(file_name.clone());
         let input = match read_text(path, cancelled) {
             Ok(Some(input)) => input,
             Ok(None) => return None,
             Err(error) => {
                 batch.errors.push(log::ImportError {
                     file: file_name,
+                    source: Some(source),
                     line: None,
                     message: format!("Could not read {}: {error}", path.display()),
                 });
                 continue;
             }
         };
-        let mut parsed = log::parse_cancellable(&file_name, batch.files.len(), &input, cancelled)?;
+        let mut parsed = log::parse_cancellable(&file_name, source, &input, cancelled)?;
         batch.events.append(&mut parsed.events);
         batch.errors.append(&mut parsed.errors);
-        batch.files.push(file_name);
     }
     if cancelled() { None } else { Some(batch) }
 }
@@ -175,7 +177,7 @@ mod tests {
         assert_eq!(progress, paths);
         assert_eq!(batch.events.len(), 2);
         assert_eq!(batch.errors.len(), 2);
-        assert_eq!(batch.files, ["first.ndjson", "second.json"]);
+        assert_eq!(batch.files, ["first.ndjson", "missing.json", "second.json"]);
         batch.validate().unwrap();
     }
 
